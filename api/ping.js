@@ -1,17 +1,32 @@
 const admin = require('firebase-admin');
 
-// Inisialisasi Firebase Admin jika belum berjalan
-if (!admin.apps.length) {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-}
-
-const db = admin.firestore();
-
 module.exports = async (req, res) => {
   try {
+    // 1. Validasi keberadaan Environment Variable
+    if (!process.env.FIREBASE_CREDENTIALS) {
+      return res.status(500).send("Error: Variable FIREBASE_CREDENTIALS belum diisi di Vercel Settings.");
+    }
+
+    // 2. Inisialisasi Firebase Admin secara aman di dalam handler
+    if (!admin.apps.length) {
+      let serviceAccount;
+      try {
+        serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+
+        // Memperbaiki karakter baris baru (\n) pada private_key yang sering ter-escape saat di-paste
+        if (serviceAccount.private_key) {
+          serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+        }
+      } catch (jsonErr) {
+        return res.status(500).send("Error JSON: Format FIREBASE_CREDENTIALS tidak valid. Pastikan di-copy lengkap dari file .json Firebase.");
+      }
+
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+    }
+
+    const db = admin.firestore();
     const sekarang = new Date();
     
     // Format tanggal & waktu WIB (Asia/Jakarta)
@@ -21,8 +36,6 @@ module.exports = async (req, res) => {
     const [month, day, year] = sekarang.toLocaleDateString('en-US', opsiTanggal).split('/');
     const currentDate = `${year}-${month}-${day}`;
     const currentTime = sekarang.toLocaleTimeString('en-GB', opsiWaktu).slice(0, 5);
-
-    console.log(`[CHECK] WIB: ${currentDate} ${currentTime}`);
 
     // Cari jadwal di Firestore
     const snapshot = await db.collection('events')
@@ -35,13 +48,15 @@ module.exports = async (req, res) => {
       return res.status(200).send(`Selesai. Tidak ada jadwal pada ${currentDate} ${currentTime}.`);
     }
 
-    // Kirim notifikasi
+    // Kirim notifikasi FCM
     const prosesKirim = snapshot.docs.map(async (doc) => {
       const event = doc.data();
+      if (!event.fcmToken) return;
+
       const payload = {
         notification: {
           title: '⏰ Pengingat Scheduly Pro',
-          body: event.title
+          body: event.title || 'Ada jadwal kegiatan!'
         },
         token: event.fcmToken
       };
@@ -50,13 +65,14 @@ module.exports = async (req, res) => {
         await admin.messaging().send(payload);
         await doc.ref.update({ notified: true });
       } catch (err) {
-        console.error(err);
+        console.error('Gagal kirim notif:', err);
       }
     });
 
     await Promise.all(prosesKirim);
-    res.status(200).send(`Berhasil memproses ${snapshot.size} notifikasi.`);
+    return res.status(200).send(`Berhasil memproses ${snapshot.size} notifikasi.`);
+
   } catch (error) {
-    res.status(500).send('Server Error: ' + error.message);
+    return res.status(500).send('Server Error: ' + error.message);
   }
 };

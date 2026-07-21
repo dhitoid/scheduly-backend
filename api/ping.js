@@ -2,23 +2,19 @@ const admin = require('firebase-admin');
 
 module.exports = async (req, res) => {
   try {
-    // 1. Validasi keberadaan Environment Variable
     if (!process.env.FIREBASE_CREDENTIALS) {
-      return res.status(500).send("Error: Variable FIREBASE_CREDENTIALS belum diisi di Vercel Settings.");
+      return res.status(500).send("Error: FIREBASE_CREDENTIALS belum diisi.");
     }
 
-    // 2. Inisialisasi Firebase Admin secara aman di dalam handler
     if (!admin.apps.length) {
       let serviceAccount;
       try {
         serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
-
-        // Memperbaiki karakter baris baru (\n) pada private_key yang sering ter-escape saat di-paste
         if (serviceAccount.private_key) {
           serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
         }
       } catch (jsonErr) {
-        return res.status(500).send("Error JSON: Format FIREBASE_CREDENTIALS tidak valid. Pastikan di-copy lengkap dari file .json Firebase.");
+        return res.status(500).send("Error Format JSON Firebase.");
       }
 
       admin.initializeApp({
@@ -29,7 +25,7 @@ module.exports = async (req, res) => {
     const db = admin.firestore();
     const sekarang = new Date();
     
-    // Format tanggal & waktu WIB (Asia/Jakarta)
+    // Format WIB (Asia/Jakarta)
     const opsiTanggal = { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' };
     const opsiWaktu = { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hour12: false };
 
@@ -48,17 +44,34 @@ module.exports = async (req, res) => {
       return res.status(200).send(`Selesai. Tidak ada jadwal pada ${currentDate} ${currentTime}.`);
     }
 
-    // Kirim notifikasi FCM
+    // Kirim notifikasi dengan Payload Khusus iOS APNs
     const prosesKirim = snapshot.docs.map(async (doc) => {
       const event = doc.data();
       if (!event.fcmToken) return;
 
       const payload = {
+        token: event.fcmToken,
         notification: {
           title: '⏰ Pengingat Scheduly Pro',
           body: event.title || 'Ada jadwal kegiatan!'
         },
-        token: event.fcmToken
+        // Konfigurasi Khusus iOS APNs agar Notifikasi Muncul di Latar Belakang
+        apns: {
+          payload: {
+            aps: {
+              alert: {
+                title: '⏰ Pengingat Scheduly Pro',
+                body: event.title || 'Ada jadwal kegiatan!'
+              },
+              sound: 'default',
+              badge: 1,
+              'content-available': 1
+            }
+          },
+          headers: {
+            'apns-priority': '10' // Prioritas tertinggi: Langsung kirim saat layar terkunci
+          }
+        }
       };
 
       try {
